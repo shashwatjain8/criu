@@ -121,19 +121,22 @@ def modify(opts):
     pages.seek((PAGE_SIZE * stack_area_page) + (int(v4l,16) - int(stack_area_offset,16)),0)
     x = pages.read(DWORD_SIZE)
     v4v = int(hex(int.from_bytes(x, byteorder='little')),16)
-    ran = random.randint(v4v,40)
-    pages.seek((PAGE_SIZE * stack_area_page) + (int(v4l,16) - int(stack_area_offset,16)),0)
-    x = ran.to_bytes(4, 'little')
-    pages.write(x)
+    ran = random.randint(v4v,31)
+    #Randomize iterator only under condition to make sure process deos not run forever. Need to end process since modifying looping value too.
+    if v4v < 23:
+        pages.seek((PAGE_SIZE * stack_area_page) + (int(v4l,16) - int(stack_area_offset,16)),0)
+        x = ran.to_bytes(4, 'little')
+        pages.write(x)
 
     ran -= 1
 
     pages.seek((PAGE_SIZE * stack_area_page) + (int(v3l,16) - int(stack_area_offset,16)),0)
     x = pages.read(DWORD_SIZE)
     v3v = int(hex(int.from_bytes(x, byteorder='little')),16)
-    pages.seek((PAGE_SIZE * stack_area_page) + (int(v3l,16) - int(stack_area_offset,16)),0)
-    x = ran.to_bytes(4, 'little')
-    pages.write(x)
+    if v4v < 23:
+        pages.seek((PAGE_SIZE * stack_area_page) + (int(v3l,16) - int(stack_area_offset,16)),0)
+        x = ran.to_bytes(4, 'little')
+        pages.write(x)
     
     pages.seek((PAGE_SIZE * stack_area_page) + (int(v2l,16) - int(stack_area_offset,16)),0)
     x = pages.read(2*QWORD_SIZE)
