@@ -5,6 +5,12 @@ import json
 import os
 
 import pycriu
+from struct import *
+import random
+
+PAGE_SIZE = 0x1000
+DWORD_SIZE = 4
+QWORD_SIZE = 8
 
 
 def inf(opts):
@@ -37,6 +43,116 @@ def outf(opts, decode):
 
 def dinf(opts, name):
     return open(os.path.join(opts['dir'], name), mode='rb')
+
+
+# The function for now involves some partial hardcoding with respect to number of variables adn their sizes. 
+# This can be removed by putting code to understand binary code 
+
+def modify(opts):
+    # Load All requried Images to locate stack and modify pages.img
+    pid = opts['in']
+    try:
+        # Load PageMap Image
+        opts['in'] = opts['dir'] + "/pagemap-" + pid + ".img"
+        pageimg = pycriu.images.load(inf(opts), True, opts['nopl'])
+        # Load MMap Image
+        opts['in'] = opts['dir'] + "/mm-" + pid + ".img"
+        memimg = pycriu.images.load(inf(opts), True, opts['nopl'])
+        # Load Core Image
+        opts['in'] = opts['dir'] + "/core-" + pid + ".img"
+        coreimg = pycriu.images.load(inf(opts), True, opts['nopl'])
+
+    except pycriu.images.MagicException as exc:
+        print("Unknown magic %#x.\n"\
+          "Maybe you are feeding me an image with "\
+          "raw data(i.e. pages.img)?" % exc.magic, file=sys.stderr)
+        sys.exit(1)
+
+    indent = 4
+    # Images Loaded Successfully. Look for Stack Location for Modification of Variables
+    # Load Stack and Base Frame Pointers from Core File
+    base_pointer = coreimg['entries'][0]['thread_info']['gpregs']['bp']
+    stack_pointer = coreimg['entries'][0]['thread_info']['gpregs']['sp']
+    page = 0
+
+    # Search for VMA which Holds the Stack
+    vmas = memimg['entries'][0]['vmas']
+    while page < len(vmas):
+        if "MAP_GROWSDOWN" in vmas[page]['flags']:
+            break; 
+        page = page + 1
+    start_stack_vma = vmas[page]['start'] 
+    end_stack_vma = vmas[page]['end'] 
+    
+    # Load the Page Mapping information to get Stack Data from pages.img
+    total_pages = 0
+    page_entries = pageimg['entries']
+    stack_area_page = 0
+    stack_area_offset = ''
+    num_pages_for_stack = 0
+    for entry in page_entries:
+        try:
+            if start_stack_vma <= entry['vaddr'] and end_stack_vma > entry['vaddr']:
+                stack_area_page = total_pages
+                stack_area_offset =  entry['vaddr']
+                num_pages_for_stack = entry['nr_pages']
+            total_pages += entry['nr_pages']
+        except:
+            continue
+    
+    # Read the pages.img and modify locals
+    pages = open(opts['dir'] + '/pages-1.img', 'r+b')
+    # Seek Till Base Pointer
+    # Hardcoded 0x20 for 4 passed by reference addresses in the callee function for target process for now. 
+    # Need to use a binary code lifter to automate finding of variables
+    pages.seek((PAGE_SIZE * stack_area_page) + (int(base_pointer,16) - int(stack_area_offset,16)) - 0x20,0)
+    x = pages.read(QWORD_SIZE)
+    v1l = hex(int.from_bytes(x, byteorder='little'))
+    x = pages.read(QWORD_SIZE)
+    v2l = hex(int.from_bytes(x, byteorder='little'))
+    x = pages.read(QWORD_SIZE)
+    v3l = hex(int.from_bytes(x, byteorder='little'))
+    x = pages.read(QWORD_SIZE)
+    v4l = hex(int.from_bytes(x, byteorder='little'))
+
+    # Generate Random Values for the elapsed variables and Strings and Modidy in the Stack
+    # Vxl variables hold addresses for variables as gotten from Base Pointer Relative Offsets.
+
+    pages.seek((PAGE_SIZE * stack_area_page) + (int(v4l,16) - int(stack_area_offset,16)),0)
+    x = pages.read(DWORD_SIZE)
+    v4v = int(hex(int.from_bytes(x, byteorder='little')),16)
+    ran = random.randint(v4v,40)
+    pages.seek((PAGE_SIZE * stack_area_page) + (int(v4l,16) - int(stack_area_offset,16)),0)
+    x = ran.to_bytes(4, 'little')
+    pages.write(x)
+
+    ran -= 1
+
+    pages.seek((PAGE_SIZE * stack_area_page) + (int(v3l,16) - int(stack_area_offset,16)),0)
+    x = pages.read(DWORD_SIZE)
+    v3v = int(hex(int.from_bytes(x, byteorder='little')),16)
+    pages.seek((PAGE_SIZE * stack_area_page) + (int(v3l,16) - int(stack_area_offset,16)),0)
+    x = ran.to_bytes(4, 'little')
+    pages.write(x)
+    
+    pages.seek((PAGE_SIZE * stack_area_page) + (int(v2l,16) - int(stack_area_offset,16)),0)
+    x = pages.read(2*QWORD_SIZE)
+    strx = x.decode('utf-8')
+    strrand = (''.join(random.sample(strx,len(strx)))).encode()
+    pages.seek((PAGE_SIZE * stack_area_page) + (int(v2l,16) - int(stack_area_offset,16)),0)
+    pages.write(strrand)
+
+    pages.seek((PAGE_SIZE * stack_area_page) + (int(v1l,16) - int(stack_area_offset,16)),0)
+    x = pages.read(2*QWORD_SIZE)
+    #v1v = hex(int.from_bytes(x, byteorder='little'))
+    strx = x.decode('utf-8')
+    strrand = (''.join(random.sample(strx,len(strx)))).encode()
+    pages.seek((PAGE_SIZE * stack_area_page) + (int(v1l,16) - int(stack_area_offset,16)),0)
+    pages.write(strrand)
+
+    pages.close()
+
+    return 0
 
 
 def decode(opts):
@@ -151,10 +267,7 @@ def ftype_find_in_files(opts, ft, fid):
 def ftype_find_in_image(opts, ft, fid, img):
     f = ftype_find_in_files(opts, ft, fid)
     if f:
-        if ft['field'] in f:
-            return f[ft['field']]
-        else:
-            return None
+        return f[ft['field']]
 
     if ft['img'] is None:
         ft['img'] = pycriu.images.load(dinf(opts, img))['entries']
@@ -402,6 +515,24 @@ def main():
         '--out',
         help='where to put criu image in binary format (stdout by default)')
     encode_parser.set_defaults(func=encode)
+
+    # Modify
+    modify_parser = subparsers.add_parser(
+        'modify', help='convert and modify criu image')
+    modify_parser.add_argument(
+        '-i',
+        '--in',
+        help='criu image in binary format to be decoded (stdin by default)')
+    modify_parser.add_argument(
+        '-o',
+        '--out',
+        help='where to put criu image in json format (stdout by default)')
+    modify_parser.add_argument(
+        '-d',
+        '--dir',
+        help='Dir for Dump Images')
+    modify_parser.set_defaults(func=modify, nopl=False)
+    
 
     # Info
     info_parser = subparsers.add_parser('info', help='show info about image')
